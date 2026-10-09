@@ -14,3 +14,16 @@ pub fn derive_enum(input: TokenStream) -> TokenStream {
 pub fn derive_params(input: TokenStream) -> TokenStream {
     params::derive_params(input)
 }
+
+/// Returns the string literal in an attribute value such as `#[id = "foo"]`, looking through the
+/// invisible groups that `macro_rules!` fragments are wrapped in.
+fn lit_str(expr: &syn::Expr) -> Option<&syn::LitStr> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) => Some(s),
+        syn::Expr::Group(group) => lit_str(&group.expr),
+        _ => None,
+    }
+}

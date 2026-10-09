@@ -43,12 +43,14 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
         // then we'll error out.
         let mut processed_attribute = false;
         for attr in &field.attrs {
-            if attr.path.is_ident("id") {
-                match attr.parse_meta() {
-                    Ok(syn::Meta::NameValue(syn::MetaNameValue {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) => {
+            if attr.path().is_ident("id") {
+                match attr
+                    .meta
+                    .require_name_value()
+                    .ok()
+                    .and_then(|nv| crate::lit_str(&nv.value))
+                {
+                    Some(s) => {
                         if processed_attribute {
                             return syn::Error::new(
                                 attr.span(),
@@ -62,7 +64,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                         // large enough to the point where a linear search starts being expensive,
                         // then the plugin should probably start splitting up their parameters.
                         if params.iter().any(|p| match p {
-                            Param::Single { id, .. } => &s == id,
+                            Param::Single { id, .. } => s == id,
                             _ => false,
                         }) {
                             return syn::Error::new(
@@ -74,7 +76,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                         }
 
                         params.push(Param::Single {
-                            id: s,
+                            id: s.clone(),
                             field: field_name.clone(),
                         });
 
@@ -90,12 +92,14 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                         .into();
                     }
                 };
-            } else if attr.path.is_ident("persist") {
-                match attr.parse_meta() {
-                    Ok(syn::Meta::NameValue(syn::MetaNameValue {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) => {
+            } else if attr.path().is_ident("persist") {
+                match attr
+                    .meta
+                    .require_name_value()
+                    .ok()
+                    .and_then(|nv| crate::lit_str(&nv.value))
+                {
+                    Some(s) => {
                         if processed_attribute {
                             return syn::Error::new(
                                 attr.span(),
@@ -105,7 +109,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                             .into();
                         }
 
-                        if persistent_fields.iter().any(|p| p.key == s) {
+                        if persistent_fields.iter().any(|p| p.key == *s) {
                             return syn::Error::new(
                                 field.span(),
                                 "Multiple persistent fields with the same key found",
@@ -115,7 +119,7 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                         }
 
                         persistent_fields.push(PersistentField {
-                            key: s,
+                            key: s.clone(),
                             field: field_name.clone(),
                         });
 
@@ -131,20 +135,27 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                         .into();
                     }
                 };
-            } else if attr.path.is_ident("nested") {
+            } else if attr.path().is_ident("nested") {
                 // This one is more complicated. Supports an `array` attribute, an `id_prefix =
                 // "foo"` attribute, and a `group = "group name"` attribute. All are optional, and
                 // the first two are mutually exclusive.
                 let mut nested_array = false;
                 let mut nested_id_prefix: Option<syn::LitStr> = None;
                 let mut nested_group: Option<syn::LitStr> = None;
-                match attr.parse_meta() {
+                // Plain `#[nested]` attributes have no list, and the list needs to be a
+                // comma-separated list of `array`, `id_prefix = "..."`, and `group = "..."` items
+                let nested_attrs = match &attr.meta {
+                    syn::Meta::List(list) => list
+                        .parse_args_with(
+                            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                        )
+                        .ok(),
+                    _ => None,
+                };
+                match (&attr.meta, nested_attrs) {
                     // In this case it's a plain `#[nested]` attribute without parameters
-                    Ok(syn::Meta::Path(..)) => (),
-                    Ok(syn::Meta::List(syn::MetaList {
-                        nested: nested_attrs,
-                        ..
-                    })) => {
+                    (syn::Meta::Path(..), _) => (),
+                    (syn::Meta::List(..), Some(nested_attrs)) => {
                         if processed_attribute {
                             return syn::Error::new(
                                 attr.span(),
@@ -154,29 +165,27 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                             .into();
                         }
 
-                        for nested_attr in nested_attrs {
-                            match nested_attr {
-                                syn::NestedMeta::Meta(syn::Meta::Path(p))
-                                    if p.is_ident("array") =>
-                                {
+                        for nested_attr in &nested_attrs {
+                            let nested_value = match nested_attr {
+                                syn::Meta::NameValue(syn::MetaNameValue { value, .. }) => {
+                                    crate::lit_str(value)
+                                }
+                                _ => None,
+                            };
+                            match (nested_attr, nested_value) {
+                                (syn::Meta::Path(p), _) if p.is_ident("array") => {
                                     nested_array = true;
                                 }
-                                syn::NestedMeta::Meta(syn::Meta::NameValue(
-                                    syn::MetaNameValue {
-                                        path,
-                                        lit: syn::Lit::Str(s),
-                                        ..
-                                    },
-                                )) if path.is_ident("id_prefix") => {
+                                (
+                                    syn::Meta::NameValue(syn::MetaNameValue { path, .. }),
+                                    Some(s),
+                                ) if path.is_ident("id_prefix") => {
                                     nested_id_prefix = Some(s.clone());
                                 }
-                                syn::NestedMeta::Meta(syn::Meta::NameValue(
-                                    syn::MetaNameValue {
-                                        path,
-                                        lit: syn::Lit::Str(s),
-                                        ..
-                                    },
-                                )) if path.is_ident("group") => {
+                                (
+                                    syn::Meta::NameValue(syn::MetaNameValue { path, .. }),
+                                    Some(s),
+                                ) if path.is_ident("group") => {
                                     let group_name = s.value();
                                     if group_name.is_empty() {
                                         return syn::Error::new(
